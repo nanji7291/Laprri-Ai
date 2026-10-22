@@ -1,0 +1,8 @@
+{
+  "name": "Laprri AI Assistant",
+  "description": "Next-generation AI Assistant with voice control, intelligent chat, device automation, and coding tools without login or subscription requirements.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
