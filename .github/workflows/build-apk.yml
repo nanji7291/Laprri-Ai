@@ -19,6 +19,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
       - name: Create .env file for API Key
         run: |
           if [ -f ".env.example" ]; then
@@ -27,22 +30,8 @@ jobs:
             echo "GEMINI_API_KEY=AIzaSy_Placeholder_Key" > .env
           fi
 
-      - name: Grant execute permission for gradlew
-        run: |
-          if [ -f "gradlew" ]; then
-            chmod +x gradlew
-          else
-            echo "Gradle wrapper not found in root, searching..."
-          fi
-
-      - name: Build Debug APK with Gradle
-        run: |
-          if [ -f "gradlew" ]; then
-            ./gradlew assembleDebug
-          else
-            echo "Error: gradlew missing"
-            exit 1
-          fi
+      - name: Build Debug APK with Gradle Action
+        run: gradle assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
