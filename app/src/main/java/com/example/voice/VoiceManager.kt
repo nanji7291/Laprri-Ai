@@ -1,204 +1,175 @@
 package com.example.voice
 
-import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.AudioTrack
+import android.media.MediaRecorder
+import android.util.Base64
 import android.util.Log
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import java.util.Locale
+import okhttp3.*
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
-enum class AssistantAudioState {
-    IDLE,
-    LISTENING,
-    THINKING,
-    SPEAKING
-}
+class VoiceManager(
+    private val apiKey: String,
+    private val onStateChange: (Boolean) -> Unit
+) {
+    private var webSocket: WebSocket? = null
+    private var audioRecord: AudioRecord? = null
+    private var audioTrack: AudioTrack? = null
+    private var isStreaming = false
 
-class VoiceManager(private val context: Context) : TextToSpeech.OnInitListener {
+    private val sampleRate = 16000
+    private val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
+    private val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
+    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat)
 
-    private var textToSpeech: TextToSpeech? = null
-    private var speechRecognizer: SpeechRecognizer? = null
-    private var isTtsReady = false
+    private val client = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
 
-    private val _audioState = MutableStateFlow(AssistantAudioState.IDLE)
-    val audioState: StateFlow<AssistantAudioState> = _audioState.asStateFlow()
+    fun startLiveSession() {
+        val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey"
+        val request = Request.Builder().url(url).build()
 
-    private val _recognizedText = MutableStateFlow("")
-    val recognizedText: StateFlow<String> = _recognizedText.asStateFlow()
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d("GeminiLive", "WebSocket Connected")
+                sendInitialSetup(webSocket)
+                startAudioRecording(webSocket)
+                initAudioTrack()
+                isStreaming = true
+                onStateChange(true)
+            }
 
-    private val _audioAmplitude = MutableStateFlow(0f)
-    val audioAmplitude: StateFlow<Float> = _audioAmplitude.asStateFlow()
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                handleIncomingAudio(text)
+            }
 
-    var onSpeechRecognized: ((String) -> Unit)? = null
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e("GeminiLive", "Connection failed: ${t.message}")
+                stopLiveSession()
+            }
 
-    init {
-        try {
-            textToSpeech = TextToSpeech(context, this)
-        } catch (e: Exception) {
-            Log.e("VoiceManager", "Error initializing TTS", e)
-        }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d("GeminiLive", "Session Closed")
+                stopLiveSession()
+            }
+        })
     }
 
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            isTtsReady = true
-            textToSpeech?.let { tts ->
-                val locale = Locale("hi", "IN")
-                val result = tts.setLanguage(locale)
-                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts.language = Locale.US
+    private fun sendInitialSetup(webSocket: WebSocket) {
+        val setupJson = JSONObject().apply {
+            put("setup", JSONObject().apply {
+                put("model", "models/gemini-2.0-flash-exp")
+                put("generationConfig", JSONObject().apply {
+                    put("responseModalities", arrayOf("AUDIO"))
+                    put("speechConfig", JSONObject().apply {
+                        put("voiceConfig", JSONObject().apply {
+                            put("prebuiltVoiceConfig", JSONObject().apply {
+                                put("voiceName", "Puck")
+                            })
+                        })
+                    })
+                })
+            })
+        }
+        webSocket.send(setupJson.toString())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAudioRecording(webSocket: WebSocket) {
+        audioRecord = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            sampleRate,
+            channelConfigIn,
+            audioFormat,
+            bufferSize
+        )
+
+        audioRecord?.startRecording()
+
+        Thread {
+            val audioBuffer = ByteArray(bufferSize)
+            while (isStreaming) {
+                val readBytes = audioRecord?.read(audioBuffer, 0, bufferSize) ?: 0
+                if (readBytes > 0) {
+                    val base64Audio = Base64.encodeToString(audioBuffer, 0, readBytes, Base64.NO_WRAP)
+                    val pcmChunk = JSONObject().apply {
+                        put("realtimeInput", JSONObject().apply {
+                            put("mediaChunks", arrayOf(JSONObject().apply {
+                                put("mimeType", "audio/pcm")
+                                put("data", base64Audio)
+                            }))
+                        })
+                    }
+                    webSocket.send(pcmChunk.toString())
                 }
-                tts.setPitch(1.05f)
-                tts.setSpeechRate(1.0f)
-                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        _audioState.value = AssistantAudioState.SPEAKING
-                    }
-
-                    override fun onDone(utteranceId: String?) {
-                        _audioState.value = AssistantAudioState.IDLE
-                    }
-
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) {
-                        _audioState.value = AssistantAudioState.IDLE
-                    }
-                })
             }
-        }
+        }.start()
     }
 
-    fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            Log.w("VoiceManager", "Speech recognition not available on device")
-            return
-        }
+    private fun initAudioTrack() {
+        val minTrackBuffer = AudioTrack.getMinBufferSize(sampleRate, channelConfigOut, audioFormat)
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(audioFormat)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfigOut)
+                    .build()
+            )
+            .setBufferSizeInBytes(minTrackBuffer)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
 
-        stopSpeaking()
-        stopListening()
+        audioTrack?.play()
+    }
 
+    private fun handleIncomingAudio(jsonString: String) {
         try {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        _audioState.value = AssistantAudioState.LISTENING
-                        _recognizedText.value = ""
+            val json = JSONObject(jsonString)
+            val parts = json.optJSONObject("serverContent")
+                ?.optJSONObject("modelTurn")
+                ?.optJSONArray("parts")
+
+            if (parts != null) {
+                for (i in 0 until parts.length()) {
+                    val part = parts.getJSONObject(i)
+                    val inlineData = part.optJSONObject("inlineData")
+                    if (inlineData != null) {
+                        val base64Data = inlineData.getString("data")
+                        val pcmBytes = Base64.decode(base64Data, Base64.DEFAULT)
+                        audioTrack?.write(pcmBytes, 0, pcmBytes.size)
                     }
-
-                    override fun onBeginningOfSpeech() {
-                        _audioState.value = AssistantAudioState.LISTENING
-                    }
-
-                    override fun onRmsChanged(rmsdB: Float) {
-                        val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
-                        _audioAmplitude.value = normalized
-                    }
-
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-
-                    override fun onEndOfSpeech() {
-                        _audioState.value = AssistantAudioState.THINKING
-                    }
-
-                    override fun onError(error: Int) {
-                        _audioState.value = AssistantAudioState.IDLE
-                        _audioAmplitude.value = 0f
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        _audioAmplitude.value = 0f
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val text = matches?.firstOrNull().orEmpty()
-                        if (text.isNotBlank()) {
-                            _recognizedText.value = text
-                            _audioState.value = AssistantAudioState.THINKING
-                            onSpeechRecognized?.invoke(text)
-                        } else {
-                            _audioState.value = AssistantAudioState.IDLE
-                        }
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        matches?.firstOrNull()?.let {
-                            _recognizedText.value = it
-                        }
-                    }
-
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
+                }
             }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            }
-            speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
-            Log.e("VoiceManager", "Failed to start listening", e)
-            _audioState.value = AssistantAudioState.IDLE
+            Log.e("GeminiLive", "Error parsing incoming audio", e)
         }
     }
 
-    fun stopListening() {
-        try {
-            speechRecognizer?.stopListening()
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-        } catch (e: Exception) {
-            Log.e("VoiceManager", "Error stopping recognizer", e)
-        }
-        if (_audioState.value == AssistantAudioState.LISTENING) {
-            _audioState.value = AssistantAudioState.IDLE
-        }
-        _audioAmplitude.value = 0f
-    }
+    fun stopLiveSession() {
+        isStreaming = false
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioRecord = null
 
-    fun speak(text: String) {
-        if (!isTtsReady || textToSpeech == null) return
-        stopListening()
-        // Strip out markdown formatting symbols for speech
-        val cleanedText = text
-            .replace(Regex("```[\\s\\S]*?```"), "Code generated in dashboard")
-            .replace(Regex("[#*`_~]"), "")
-            .trim()
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
 
-        if (cleanedText.isBlank()) return
+        webSocket?.close(1000, "User stopped session")
+        webSocket = null
 
-        _audioState.value = AssistantAudioState.SPEAKING
-        textToSpeech?.speak(cleanedText, TextToSpeech.QUEUE_FLUSH, null, "LAPRRI_SPEECH_${System.currentTimeMillis()}")
-    }
-
-    fun stopSpeaking() {
-        if (textToSpeech?.isSpeaking == true) {
-            textToSpeech?.stop()
-        }
-        if (_audioState.value == AssistantAudioState.SPEAKING) {
-            _audioState.value = AssistantAudioState.IDLE
-        }
-    }
-
-    fun setSpeechRate(rate: Float) {
-        textToSpeech?.setSpeechRate(rate)
-    }
-
-    fun setPitch(pitch: Float) {
-        textToSpeech?.setPitch(pitch)
-    }
-
-    fun destroy() {
-        stopSpeaking()
-        stopListening()
-        textToSpeech?.shutdown()
-        textToSpeech = null
+        onStateChange(false)
     }
 }
