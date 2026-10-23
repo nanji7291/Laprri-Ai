@@ -18,7 +18,8 @@ class VoiceManager(
     private var webSocket: WebSocket? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
-    private var isStreaming = false
+    @Volatile var isStreaming = false
+        private set
 
     private val sampleRate = 16000
     private val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
@@ -31,16 +32,17 @@ class VoiceManager(
         .build()
 
     fun startLiveSession() {
+        if (isStreaming) return
         val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey"
         val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d("GeminiLive", "WebSocket Connected")
+                isStreaming = true
                 sendInitialSetup(webSocket)
                 startAudioRecording(webSocket)
                 initAudioTrack()
-                isStreaming = true
                 onStateChange(true)
             }
 
@@ -159,12 +161,16 @@ class VoiceManager(
 
     fun stopLiveSession() {
         isStreaming = false
-        audioRecord?.stop()
-        audioRecord?.release()
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (e: Exception) { }
         audioRecord = null
 
-        audioTrack?.stop()
-        audioTrack?.release()
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+        } catch (e: Exception) { }
         audioTrack = null
 
         webSocket?.close(1000, "User stopped session")
