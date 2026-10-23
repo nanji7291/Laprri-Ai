@@ -24,11 +24,7 @@ jobs:
 
       - name: Create .env file for API Key
         run: |
-          if [ -f ".env.example" ]; then
-            cp .env.example .env
-          else
-            echo "GEMINI_API_KEY=AQ.Ab8RN6KbndUMLdJfHE1F2E4WICAkrJ3YzputHHt7gyalnMA0TA" > .env
-          fi
+          echo "GEMINI_API_KEY=AQ_ABdAN8XBndSMLdJTHE1F2E4WiCA4rJ3YzputHM17gyaInA0TA" > .env
 
       - name: Generate Dummy Debug Keystore
         run: |
