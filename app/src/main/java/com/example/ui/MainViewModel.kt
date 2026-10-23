@@ -15,7 +15,6 @@ import com.example.data.ChatMessage
 import com.example.data.GeminiService
 import com.example.data.WebGenerator
 import com.example.data.WebProject
-import com.example.voice.AssistantAudioState
 import com.example.voice.VoiceManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,10 +24,24 @@ import kotlinx.coroutines.launch
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val geminiService = GeminiService()
-    val voiceManager = VoiceManager(application)
+
+    // Get API Key safely from AndroidManifest meta-data or use a placeholder
+    private val apiKey: String = try {
+        val appInfo = application.packageManager.getApplicationInfo(application.packageName, android.content.pm.PackageManager.GET_META_DATA)
+        appInfo.metaData?.getString("GEMINI_API_KEY") ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
+    val voiceManager = VoiceManager(apiKey) { active ->
+        _isVoiceActive.value = active
+    }
 
     private val _currentTab = MutableStateFlow(AppNavigationTab.VOICE_HUB)
     val currentTab: StateFlow<AppNavigationTab> = _currentTab.asStateFlow()
+
+    private val _isVoiceActive = MutableStateFlow(false)
+    val isVoiceActive: StateFlow<Boolean> = _isVoiceActive.asStateFlow()
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(
         listOf(
@@ -68,12 +81,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _speechPitch = MutableStateFlow(1.05f)
     val speechPitch: StateFlow<Float> = _speechPitch.asStateFlow()
 
-    init {
-        voiceManager.onSpeechRecognized = { transcript ->
-            handleUserInput(transcript, speakResponse = true)
-        }
-    }
-
     fun setTab(tab: AppNavigationTab) {
         _currentTab.value = tab
     }
@@ -88,7 +95,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                // Check if user is asking for website generation
                 if (trimmed.contains("website", ignoreCase = true) || trimmed.contains("web page", ignoreCase = true)) {
                     val newHtml = WebGenerator.generateHtmlFromPrompt(trimmed)
                     val project = WebProject(
@@ -106,9 +112,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         codeSnippet = newHtml
                     )
                     _messages.value = _messages.value + assistantMsg
-                    if (speakResponse) {
-                        voiceManager.speak(reply)
-                    }
                 } else {
                     val history = _messages.value.takeLast(6).map {
                         Pair(if (it.isUser) "user" else "model", it.text)
@@ -116,10 +119,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val reply = geminiService.generateResponse(trimmed, history)
                     val assistantMsg = ChatMessage(text = reply, isUser = false)
                     _messages.value = _messages.value + assistantMsg
-
-                    if (speakResponse) {
-                        voiceManager.speak(reply)
-                    }
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error in handling input", e)
@@ -132,20 +131,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleVoiceListening() {
-        when (voiceManager.audioState.value) {
-            AssistantAudioState.IDLE -> voiceManager.startListening()
-            AssistantAudioState.LISTENING -> voiceManager.stopListening()
-            AssistantAudioState.SPEAKING -> voiceManager.stopSpeaking()
-            AssistantAudioState.THINKING -> voiceManager.stopListening()
+        if (voiceManager.isStreaming) {
+            voiceManager.stopLiveSession()
+        } else {
+            voiceManager.startLiveSession()
         }
     }
 
     fun speakMessage(message: String) {
-        voiceManager.speak(message)
+        // Text chat response helper if needed
     }
 
     fun stopSpeaking() {
-        voiceManager.stopSpeaking()
+        voiceManager.stopLiveSession()
     }
 
     fun generateNewWebsite(prompt: String) {
@@ -221,12 +219,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSpeechRate(rate: Float) {
         _speechRate.value = rate
-        voiceManager.setSpeechRate(rate)
     }
 
     fun setSpeechPitch(pitch: Float) {
         _speechPitch.value = pitch
-        voiceManager.setPitch(pitch)
     }
 
     fun clearChatHistory() {
@@ -240,6 +236,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        voiceManager.destroy()
+        voiceManager.stopLiveSession()
     }
 }
