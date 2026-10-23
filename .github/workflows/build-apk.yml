@@ -22,18 +22,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.5'
 
-      - name: Create .env file for API Key
+      - name: Create .env File for API Key
         run: |
-          echo "GEMINI_API_KEY=AQ_ABdAN8XBndSMLdJTHE1F2E4WiCA4rJ3YzputHM17gyaInA0TA" > .env
+          echo "GEMINI_API_KEY=AQ_ABd4N0XBndSMLdJTHE1F284w1CA4rJ3VzputHW17gyaInA0TA" > .env
 
       - name: Generate Dummy Debug Keystore
         run: |
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
 
       - name: Build Debug APK with Gradle
-        run: gradle assembleDebug
+        run: ./gradlew assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
