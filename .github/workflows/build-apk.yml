@@ -27,7 +27,7 @@ jobs:
           if [ -f ".env.example" ]; then
             cp .env.example .env
           else
-            echo "GEMINI_API_KEY=AIzaSy_Placeholder_Key" > .env
+            echo "GEMINI_API_KEY=AQ.Ab8RN6KbndUMLdJfHE1F2E4WICAkrJ3YzputHHt7gyalnMA0TA" > .env
           fi
 
       - name: Generate Dummy Debug Keystore
